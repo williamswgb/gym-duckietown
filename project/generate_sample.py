@@ -6,7 +6,7 @@ from utils.wrappers import ResizeWrapper
 from gym_duckietown.envs import DuckietownEnv
 from pdb import set_trace
 
-def get_samples_from_map(map=1, seed=11, max_steps=2000):
+def get_samples_from_map(map=1, seed=11, max_steps=2000, resize=False):
     steerings = []
     observations = []
 
@@ -17,7 +17,8 @@ def get_samples_from_map(map=1, seed=11, max_steps=2000):
         max_steps=max_steps,
         seed=seed
     )
-    env = ResizeWrapper(env)
+    if resize:
+        env = ResizeWrapper(env)
 
     obs = env.reset()
     observations.append(obs)
@@ -38,7 +39,7 @@ def generate_samples():
     label = []
 
     for i in range(5):
-        observations, steerings = get_samples_from_map(map=i+1)
+        observations, steerings = get_samples_from_map(map=i+1, resize=True)
         data.extend(observations)
         label.extend(steerings)
 

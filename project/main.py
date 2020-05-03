@@ -18,7 +18,7 @@ def main():
 
     # You should set them to different map name and seed accordingly
     parser.add_argument('--map-name', default='map1')
-    parser.add_argument('--seed', type=int, default=1, help='random seed')
+    parser.add_argument('--seed', type=int, default=11, help='random seed')
     args = parser.parse_args()
 
     model = Model()
