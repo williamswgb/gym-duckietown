@@ -9,7 +9,62 @@ from gym_duckietown.envs import DuckietownEnv
 
 from pdb import set_trace
 
-REF_VELOCITY = 0.2 # make the velocity constant
+# make the velocity constant
+REF_VELOCITY = 0.2
+VELOCITY = {
+    "map1": 0.75,
+}
+DEFAULT_STEERING = {
+    "map1": -0.25
+}
+DEFAULT_LEFT_STEERING = {
+    "map1": 1
+}
+
+def on_segment(p, q, r):
+    if r[0] <= max(p[0], q[0]) and r[0] >= min(p[0], q[0]) and r[1] <= max(p[1], q[1]) and r[1] >= min(p[1], q[1]):
+        return True
+    return False
+
+def orientation(p, q, r):
+    val = ((q[1] - p[1]) * (r[0] - q[0])) - ((q[0] - p[0]) * (r[1] - q[1]))
+    if val == 0 : return 0
+    return 1 if val > 0 else -1
+
+def intersects(seg1, seg2):
+    p1, q1 = seg1
+    p2, q2 = seg2
+    o1 = orientation(p1, q1, p2)
+
+    o2 = orientation(p1, q1, q2)
+    o3 = orientation(p2, q2, p1)
+    o4 = orientation(p2, q2, q1)
+
+    if o1 != o2 and o3 != o4:
+        return True
+
+    if o1 == 0 and on_segment(p1, q1, p2): return True
+
+    if o2 == 0 and on_segment(p1, q1, q2): return True
+    if o3 == 0 and on_segment(p2, q2, p1): return True
+    if o4 == 0 and on_segment(p2, q2, q1): return True
+
+    return False
+
+def remove_intersect_line(lane_lines, steering):
+    new_lane_lines = []
+
+    for line in lane_lines:
+        x1, y1, x2, y2 = line
+        fit = np.polyfit((x1, x2), (y1, y2), 1)
+        slope = fit[0]
+        if (steering < 0 and slope < 0):
+            new_lane_lines.append(line)
+        elif (steering > 0 and slope > 0):
+            new_lane_lines.append(line)
+
+    return new_lane_lines
+
 
 def region_of_interest(image):
     height = image.shape[0]
@@ -70,7 +125,7 @@ def average_slope_intercept(image, line_segments):
     """
     if line_segments is None:
         print('No line_segment segments detected')
-        return lane_lines
+        return np.array(lane_lines)
 
     height, width, _ = image.shape
     left_fit = []
@@ -87,6 +142,7 @@ def average_slope_intercept(image, line_segments):
             continue
         if y1 == y2:
             print('skipping horizontal line segment(slope=0): %s' % line_segment)
+            continue
         fit = np.polyfit((x1, x2), (y1, y2), 1)
         slope = fit[0]
         intercept = fit[1]
@@ -105,6 +161,7 @@ def average_slope_intercept(image, line_segments):
         right_fit_average = np.average(right_fit, axis=0)
         lane_lines.append(make_points(image, right_fit_average))
 
+    # set_trace()
     # print('lane lines: %s' % lane_lines)
 
     return np.array(lane_lines)
@@ -145,52 +202,48 @@ def detect_lane(image):
 
     return lane_lines, line_image, lane_line_image
 
-def compute_new_steering(image, lane_lines, curr_steering):
+
+def compute_new_steering(image, lane_lines, curr_steering, map_name=None):
     """ Find the steering angle based on lane line coordinate
         We assume that camera is calibrated to point to dead center
     """
-    if len(lane_lines) == 0:
-        print('No lane lines detected, do nothing')
-        return curr_steering * 0.7
-        # if curr_steering == 1e-18 or curr_steering == -1e-18:
-        #     return 0
-        # elif curr_steering > 0:
-        #     return max(curr_steering * 0.7, 1e-18)
-        # elif curr_steering < 0:
-        #     return min(curr_steering * 0.7, -1e-18)
-        # else:
-        #     return 0
 
     height, width, _ = image.shape
     lane_lines = lane_lines.tolist()
+    if len(lane_lines) == 2:
+        x1_0, y1_0, x2_0, y2_0 = lane_lines[0]
+        x1_1, y1_1, x2_1, y2_1 = lane_lines[1]
+        is_intersect = intersects(((x1_0, y1_0), (x2_0, y2_0)), ((x1_1, y1_1), (x2_1, y2_1)))
+        if (is_intersect):
+            lane_lines = remove_intersect_line(lane_lines, curr_steering)
+
+    if len(lane_lines) == 0:
+        print('No lane lines detected, do nothing')
+        if curr_steering < 0:
+            return curr_steering * (DEFAULT_LEFT_STEERING.get(map_name) or 0.7)
+            # return curr_steering
+        else:
+            return DEFAULT_STEERING.get(map_name) or curr_steering * 0.7
+
     if len(lane_lines) == 1:
         # print('Only detected one lane line, just follow it. %s' % lane_lines[0])
         x1, y1, x2, y2 = lane_lines[0]
         x_offset = x2 - x1
-        # y_offset = y2 - y1
+        y_offset = y2 - y1
     else:
+        print(lane_lines)
         _, _, left_x2, _ = lane_lines[0]
         _, _, right_x2, _ = lane_lines[1]
         mid = int(width / 2)
         x_offset = (left_x2 + right_x2) / 2 - mid
         # find the steering angle, which is angle between navigation direction to end of center line
-
-    y_offset = int(height / 2)
+        y_offset = int(height / 2)
 
     angle_to_mid_radian = math.atan(x_offset / y_offset)  # angle (in radian) to center vertical line
     angle_to_mid_deg = int(angle_to_mid_radian * 180.0 / math.pi)
 
-    if angle_to_mid_radian < 0:
-        steering = angle_to_mid_radian + (90 / 180 * math.pi)
-    elif angle_to_mid_radian > 0:
-        steering = angle_to_mid_radian - (90 / 180 * math.pi)
-    else:
-        steering = 0
-
-    # print('New steering: %s' % angle_to_mid_deg)
-    # return angle_to_mid_radian
-    print('New steering: %s' % steering)
-    return steering
+    print('New steering: %s' % angle_to_mid_deg)
+    return angle_to_mid_radian
 
 def stabilize_steering(curr_steering, new_steering, num_of_lane_lines, max_angle_deviation_two_lines=5, max_angle_deviation_one_lane=1):
     """
@@ -252,22 +305,23 @@ if __name__ == '__main__':
     actions = []
     total_reward = 0
     steering = 0
+    speed = VELOCITY.get(args.map_name) or REF_VELOCITY
 
     while True:
         lane_lines, line_image, lane_line_image = detect_lane(obs)
-        new_steering = compute_new_steering(obs, lane_lines, steering)
+        new_steering = compute_new_steering(obs, lane_lines, steering, map_name=args.map_name)
         steering = stabilize_steering(steering, new_steering, len(lane_lines))
 
-        action = (REF_VELOCITY, steering)
+        action = (speed, steering)
         obs, reward, done, info = env.step(action)
         actions.append(action)
         total_reward += reward
         env.render()
 
+        # save_image(line_image, env.step_count, 'line')
+        # save_image(lane_line_image, env.step_count, 'lane_line')
+
         print('Steps = %s, Timestep Reward=%.3f, Total Reward=%.3f' % (env.step_count, reward, total_reward))
-        if (env.step_count > 0 and env.step_count <= 10):
-            save_image(line_image, env.step_count, 'line')
-            save_image(lane_line_image, env.step_count, 'lane_line')
 
         if done:
             env.close()
