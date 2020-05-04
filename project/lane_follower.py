@@ -76,25 +76,26 @@ def average_slope_intercept(image, line_segments):
     left_fit = []
     right_fit = []
 
-    # TODO: Remove boundary to handle horizontal line
     boundary = 1/3
     left_region_boundary = width * (1 - boundary)  # left lane line segment should be on left 1/3 of the screen
     right_region_boundary = width * boundary # right lane line segment should be on right 1/3 of the screen
 
     for line_segment in line_segments:
-        for x1, y1, x2, y2 in line_segment:
-            if x1 == x2:
-                print('skipping vertical line segment (slope=inf): %s' % line_segment)
-                continue
-            fit = np.polyfit((x1, x2), (y1, y2), 1)
-            slope = fit[0]
-            intercept = fit[1]
-            if slope < 0:
-                if x1 < left_region_boundary and x2 < left_region_boundary:
-                    left_fit.append((slope, intercept))
-            else:
-                if x1 > right_region_boundary and x2 > right_region_boundary:
-                    right_fit.append((slope, intercept))
+        x1, y1, x2, y2 = line_segment.reshape(4)
+        if x1 == x2:
+            print('skipping vertical line segment (slope=inf): %s' % line_segment)
+            continue
+        if y1 == y2:
+            print('skipping horizontal line segment(slope=0): %s' % line_segment)
+        fit = np.polyfit((x1, x2), (y1, y2), 1)
+        slope = fit[0]
+        intercept = fit[1]
+        if slope < 0:
+            if x1 < left_region_boundary and x2 < left_region_boundary:
+                left_fit.append((slope, intercept))
+        else:
+            if x1 > right_region_boundary and x2 > right_region_boundary:
+                right_fit.append((slope, intercept))
 
     if len(left_fit) > 0:
         left_fit_average = np.average(left_fit, axis=0)
@@ -150,14 +151,15 @@ def compute_new_steering(image, lane_lines, curr_steering):
     """
     if len(lane_lines) == 0:
         print('No lane lines detected, do nothing')
-        if curr_steering == 1e-18 or curr_steering == -1e-18:
-            return 0
-        elif curr_steering > 0:
-            return max(curr_steering * 0.7, 1e-18)
-        elif curr_steering < 0:
-            return min(curr_steering * 0.7, -1e-18)
-        else:
-            return 0
+        return curr_steering * 0.7
+        # if curr_steering == 1e-18 or curr_steering == -1e-18:
+        #     return 0
+        # elif curr_steering > 0:
+        #     return max(curr_steering * 0.7, 1e-18)
+        # elif curr_steering < 0:
+        #     return min(curr_steering * 0.7, -1e-18)
+        # else:
+        #     return 0
 
     height, width, _ = image.shape
     lane_lines = lane_lines.tolist()
@@ -165,20 +167,30 @@ def compute_new_steering(image, lane_lines, curr_steering):
         # print('Only detected one lane line, just follow it. %s' % lane_lines[0])
         x1, y1, x2, y2 = lane_lines[0]
         x_offset = x2 - x1
-        y_offset = y2 - y1
+        # y_offset = y2 - y1
     else:
         _, _, left_x2, _ = lane_lines[0]
         _, _, right_x2, _ = lane_lines[1]
         mid = int(width / 2)
         x_offset = (left_x2 + right_x2) / 2 - mid
         # find the steering angle, which is angle between navigation direction to end of center line
-        y_offset = int(height / 2)
+
+    y_offset = int(height / 2)
 
     angle_to_mid_radian = math.atan(x_offset / y_offset)  # angle (in radian) to center vertical line
     angle_to_mid_deg = int(angle_to_mid_radian * 180.0 / math.pi)
 
-    print('New steering: %s' % angle_to_mid_deg)
-    return angle_to_mid_radian
+    if angle_to_mid_radian < 0:
+        steering = angle_to_mid_radian + (90 / 180 * math.pi)
+    elif angle_to_mid_radian > 0:
+        steering = angle_to_mid_radian - (90 / 180 * math.pi)
+    else:
+        steering = 0
+
+    # print('New steering: %s' % angle_to_mid_deg)
+    # return angle_to_mid_radian
+    print('New steering: %s' % steering)
+    return steering
 
 def stabilize_steering(curr_steering, new_steering, num_of_lane_lines, max_angle_deviation_two_lines=5, max_angle_deviation_one_lane=1):
     """
@@ -221,8 +233,9 @@ if __name__ == '__main__':
     parser.add_argument('--max_steps', type=int, default=2000, help='max_steps')
 
     # You should set them to different map name and seed accordingly
-    parser.add_argument('--map_name', default='map1')
+    parser.add_argument('--map_name', default='map1', help='map to use for env')
     parser.add_argument('--seed', type=int, default=11, help='random seed')
+    parser.add_argument('--save_action', default=False, help='save actions into file')
     args = parser.parse_args()
 
     env = DuckietownEnv(
@@ -252,6 +265,9 @@ if __name__ == '__main__':
         env.render()
 
         print('Steps = %s, Timestep Reward=%.3f, Total Reward=%.3f' % (env.step_count, reward, total_reward))
+        if (env.step_count > 0 and env.step_count <= 10):
+            save_image(line_image, env.step_count, 'line')
+            save_image(lane_line_image, env.step_count, 'lane_line')
 
         if done:
             env.close()
@@ -259,12 +275,13 @@ if __name__ == '__main__':
 
     print("Total Reward", total_reward)
 
-    # # dump the controls using numpy
-    # result_path = os.path.join('result', 'test_{}_seed{}.txt'.format(args.map_name, args.seed))
-    # if not os.path.exists(os.path.dirname(result_path)):
-    #     try:
-    #         os.makedirs(os.path.dirname(result_path))
-    #     except OSError as exc: # Guard against race condition
-    #         if exc.errno != errno.EEXIST:
-    #             raise
-    # np.savetxt(result_path, actions, delimiter=',')
+    # dump the controls using numpy
+    if args.save_action:
+        result_path = os.path.join('result', args.map_name, '{}_seed{}.txt'.format(args.map_name, args.seed))
+        if not os.path.exists(os.path.dirname(result_path)):
+            try:
+                os.makedirs(os.path.dirname(result_path))
+            except OSError as exc: # Guard against race condition
+                if exc.errno != errno.EEXIST:
+                    raise
+        np.savetxt(result_path, actions, delimiter=',')
