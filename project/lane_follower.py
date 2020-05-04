@@ -6,7 +6,6 @@ import math
 import os
 import argparse
 from gym_duckietown.envs import DuckietownEnv
-from utils.teacher import PurePursuitExpert
 
 from pdb import set_trace
 
@@ -77,6 +76,7 @@ def average_slope_intercept(image, line_segments):
     left_fit = []
     right_fit = []
 
+    # TODO: Remove boundary to handle horizontal line
     boundary = 1/3
     left_region_boundary = width * (1 - boundary)  # left lane line segment should be on left 1/3 of the screen
     right_region_boundary = width * boundary # right lane line segment should be on right 1/3 of the screen
@@ -104,7 +104,7 @@ def average_slope_intercept(image, line_segments):
         right_fit_average = np.average(right_fit, axis=0)
         lane_lines.append(make_points(image, right_fit_average))
 
-    # print('lane lines: %s' % lane_lines)  # [[[316, 720, 484, 432]], [[1009, 720, 718, 432]]]
+    # print('lane lines: %s' % lane_lines)
 
     return np.array(lane_lines)
 
@@ -116,7 +116,7 @@ def detect_line_segments(image):
     rho = 1
     theta = np.pi / 180
     threshold = 10
-    min_line_length = 150
+    min_line_length = 100
     max_line_gap = 10
 
     line_segments = cv2.HoughLinesP(
@@ -150,37 +150,37 @@ def compute_new_steering(image, lane_lines, curr_steering):
     """
     if len(lane_lines) == 0:
         print('No lane lines detected, do nothing')
-        return curr_steering * 0.8
+        if curr_steering == 1e-18 or curr_steering == -1e-18:
+            return 0
+        elif curr_steering > 0:
+            return max(curr_steering * 0.7, 1e-18)
+        elif curr_steering < 0:
+            return min(curr_steering * 0.7, -1e-18)
+        else:
+            return 0
 
     height, width, _ = image.shape
     lane_lines = lane_lines.tolist()
     if len(lane_lines) == 1:
         # print('Only detected one lane line, just follow it. %s' % lane_lines[0])
-        x1, _, x2, _ = lane_lines[0]
+        x1, y1, x2, y2 = lane_lines[0]
         x_offset = x2 - x1
+        y_offset = y2 - y1
     else:
         _, _, left_x2, _ = lane_lines[0]
         _, _, right_x2, _ = lane_lines[1]
         mid = int(width / 2)
         x_offset = (left_x2 + right_x2) / 2 - mid
-
-    # find the steering angle, which is angle between navigation direction to end of center line
-    y_offset = int(height / 2)
+        # find the steering angle, which is angle between navigation direction to end of center line
+        y_offset = int(height / 2)
 
     angle_to_mid_radian = math.atan(x_offset / y_offset)  # angle (in radian) to center vertical line
     angle_to_mid_deg = int(angle_to_mid_radian * 180.0 / math.pi)
-    if angle_to_mid_deg < 0:
-        steering_angle = angle_to_mid_deg + 90
-    elif angle_to_mid_deg > 0:
-        steering_angle = angle_to_mid_deg - 90
-    else:
-        steering_angle = angle_to_mid_deg
 
-    print('New steering: %s' % steering_angle)
+    print('New steering: %s' % angle_to_mid_deg)
+    return angle_to_mid_radian
 
-    return steering_angle / 180 * math.pi
-
-def stabilize_steering(curr_steering, new_steering, num_of_lane_lines, max_angle_deviation_two_lines=5, max_angle_deviation_one_lane=2):
+def stabilize_steering(curr_steering, new_steering, num_of_lane_lines, max_angle_deviation_two_lines=5, max_angle_deviation_one_lane=1):
     """
     Using last steering angle to stabilize the steering angle
     This can be improved to use last N angles, etc
@@ -199,12 +199,12 @@ def stabilize_steering(curr_steering, new_steering, num_of_lane_lines, max_angle
     else:
         stabilized_steering = new_steering
 
-    print('Proposed angle: %s, stabilized angle: %s' % (new_steering, stabilized_steering))
+    print('Proposed steering: %s, stabilized steering: %s' % (new_steering, stabilized_steering))
 
     return stabilized_steering
 
-def save_image_obs(obs, idx):
-    data_path = os.path.join('samples', 'data', 'test', '{}.png'.format(idx))
+def save_image(obs, idx, folder_name='test'):
+    data_path = os.path.join('samples', 'data', folder_name, '{}.png'.format(idx))
     if not os.path.exists(os.path.dirname(data_path)):
         try:
             os.makedirs(os.path.dirname(data_path))
@@ -234,23 +234,14 @@ if __name__ == '__main__':
     )
 
     obs = env.reset()
-    # save_image_obs(obs, 0)
     env.render()
-
-    # get action from expert
-    expert = PurePursuitExpert(env)
-    _, target_steering = expert.predict(obs)
-
-    total_reward = 0
-
-    print('Target steering: %s' % target_steering)
 
     actions = []
     total_reward = 0
     steering = 0
 
     while True:
-        lane_lines, combined_image, combined_lane_image = detect_lane(obs)
+        lane_lines, line_image, lane_line_image = detect_lane(obs)
         new_steering = compute_new_steering(obs, lane_lines, steering)
         steering = stabilize_steering(steering, new_steering, len(lane_lines))
 
@@ -259,8 +250,6 @@ if __name__ == '__main__':
         actions.append(action)
         total_reward += reward
         env.render()
-
-        # save_image_obs(obs, env.step_count)
 
         print('Steps = %s, Timestep Reward=%.3f, Total Reward=%.3f' % (env.step_count, reward, total_reward))
 
